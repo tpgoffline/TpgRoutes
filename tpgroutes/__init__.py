@@ -11,7 +11,9 @@ from logging.handlers import RotatingFileHandler
 import sys
 from array import array
 
-MAX_STATIONS = 10_000_000
+
+MAX_STATIONS = 100_000
+STATIONS_OFFSET = 8_500_000
 MAX_INT = 2 ** 32 - 1
 
 
@@ -59,12 +61,16 @@ class TpgRoutes:
             # on évite d'initialiser un nouveau logger, et on utilise celui existant
 
     def runTest(self):
-        self.load_database("tpgoffline-data/timetables.sqlite")
-        self.logger.info(
-            "(row_id, departure_stop, arrival_stop, departure_time, arrival_time, line, trip_id, direction)"
-        )  # Cette ligne affiche un en-tête pour mieux comprendre la sortie de l'itinéraire
-        for x in self.compute_route(8_587_057, 8_595_324, 31800, 1):
-            self.logger.info(x)
+        self.load_database("timetables.sqlite")
+        departure_time = 31800
+        for x in range(6):
+            self.logger.info(
+                "(row_id, departure_stop, arrival_stop, departure_time, arrival_time, line, trip_id, direction)"
+            )  # Cette ligne affiche un en-tête pour mieux comprendre la sortie de l'itinéraire
+            route = self.compute_route(8_595_327, 8_587_062, departure_time, 1)
+            for x in route:
+                self.logger.info(x)
+            departure_time = route[0][3] + 1
 
     def configure_logs(self):
         """
@@ -95,6 +101,7 @@ class TpgRoutes:
         self.logger.info("Loading database...")
         try:
             self.database = sqlite3.connect(path)
+            self.cursor = self.database.cursor()
             self.logger.info("Database loaded")
         except:
             self.logger.exception("Loading database failed")
@@ -110,14 +117,6 @@ class TpgRoutes:
         :param departure_time: Heure minimum de départ, en secondes depuis minuit
         :param day: Jour de la semaine, peut-être un entier en 0 et 6, de dimanche à samedi
         """
-
-        try:
-            self.cursor = self.database.cursor()
-        except:
-            self.logger.exception(
-                "Access to database failed. Please, check you had loaded the database with load_database."
-            )
-            return
 
         assert departure_time > 0, "departure_time is less than 0 seconds"
         assert (
@@ -145,10 +144,12 @@ class TpgRoutes:
             EarliestArrival(MAX_INT, "", 0) for _ in range(MAX_STATIONS)
         ]
 
-        earliest_arrival[departure_station].time = departure_time
+        earliest_arrival[departure_station - STATIONS_OFFSET].time = departure_time
 
         # Juste au cas où, nous vérifions que les arrêts de départs et les arrêts d'arrivée sont dans l'écart des identifiants autorisés
-        if departure_station <= MAX_STATIONS and arrival_stop <= MAX_STATIONS:
+        if (departure_station - STATIONS_OFFSET) <= MAX_STATIONS and (
+            arrival_stop - STATIONS_OFFSET
+        ) <= MAX_STATIONS:
             earliest = MAX_INT
 
             # Nous prenons ici dans la base de données tous les départs étant postérieur à l'heure minimum de départ, ordonné par l'heure de départ
@@ -160,10 +161,12 @@ class TpgRoutes:
                     c
                 )  # Initialiser avec une classe permet de rendre le code plus lisible, et de rendre le débogage plus simple
                 minimum_connection_time = 120  # en secondes
-                if not earliest_arrival[connection.departure_stop].trip_id:
+                if not earliest_arrival[
+                    connection.departure_stop - STATIONS_OFFSET
+                ].trip_id:
                     # Si nous sommes à l'arrêt de départ, alors il n'y a pas besoin d'un délai de connexion
                     minimum_connection_time = 0
-                elif c[6] == earliest_arrival[c[1]].trip_id:
+                elif c[6] == earliest_arrival[c[1] - STATIONS_OFFSET].trip_id:
                     # Si nous continuons notre trajet avec le même véhicule, alors il n'y a pas besoin d'un délai de connexion
                     minimum_connection_time = 0
 
@@ -171,31 +174,41 @@ class TpgRoutes:
                 differents_lines = 0
                 if (
                     connection.trip_id
-                    != earliest_arrival[connection.departure_stop].trip_id
+                    != earliest_arrival[
+                        connection.departure_stop - STATIONS_OFFSET
+                    ].trip_id
                 ):
                     differents_lines = 1
 
                 if (
                     connection.departure_time
                     > (
-                        earliest_arrival[connection.departure_stop].time
+                        earliest_arrival[
+                            connection.departure_stop - STATIONS_OFFSET
+                        ].time
                         + minimum_connection_time
                     )
                     and connection.arrival_time
-                    < earliest_arrival[connection.arrival_stop].time
+                    < earliest_arrival[connection.arrival_stop - STATIONS_OFFSET].time
                 ):
                     # Si cette connexion est un meilleur choix que celui utilisé précédamment, alors nous allons enregistrer celui-ci
                     earliest_arrival[
-                        connection.arrival_stop
+                        connection.arrival_stop - STATIONS_OFFSET
                     ].time = connection.arrival_time
-                    earliest_arrival[connection.arrival_stop].connection = (
-                        earliest_arrival[connection.departure_stop].connection
+                    earliest_arrival[
+                        connection.arrival_stop - STATIONS_OFFSET
+                    ].connection = (
+                        earliest_arrival[
+                            connection.departure_stop - STATIONS_OFFSET
+                        ].connection
                         + differents_lines
                     )
                     earliest_arrival[
-                        connection.arrival_stop
+                        connection.arrival_stop - STATIONS_OFFSET
                     ].trip_id = connection.trip_id
-                    in_connection[connection.arrival_stop] = connection.id
+                    in_connection[
+                        connection.arrival_stop - STATIONS_OFFSET
+                    ] = connection.id
 
                     if connection.arrival_stop == arrival_stop:
                         # Nous sommes à l'arrêt d'arrivée, il faut enregistrer le parcours le plus court
@@ -208,7 +221,7 @@ class TpgRoutes:
 
             # Maintenant que l'itinéraire est calculé dans deux tableaux, nous pouvons donc le reconstruire
 
-            if in_connection[arrival_stop] == MAX_INT:
+            if in_connection[arrival_stop - STATIONS_OFFSET] == MAX_INT:
                 # Si l'arrêt d'arrivée n'a pas de connexion, alors aucun itinéraire n'a été trouvé
                 # Cela peut arriver parfois, notamment lorsque l'heure de départ est proche de l'heure de fin de service
                 self.logger.info("No solution was found")
@@ -216,7 +229,7 @@ class TpgRoutes:
                 route = []
 
                 # Nous devons reconstruire l'itinéraire depuis l'arrêt d'arrivée
-                last_connection_index = in_connection[arrival_stop]
+                last_connection_index = in_connection[arrival_stop - STATIONS_OFFSET]
 
                 while last_connection_index != MAX_INT:
                     self.cursor.execute(
@@ -224,15 +237,11 @@ class TpgRoutes:
                     )
                     connection = self.cursor.fetchall()[0]
                     route.append(connection)
-                    last_connection_index = in_connection[connection[1]]
+                    last_connection_index = in_connection[
+                        connection[1] - STATIONS_OFFSET
+                    ]
 
                 # Et nous pouvons retourner le résultat dans le bon ordre
-                return reversed(route)
+                return list(reversed(route))
         else:
             return []
-
-
-if __name__ == "__main__":
-    # Si le fichier est appelé directement, nous pouvons lancer un test de fonctionnement de l'algorithme.
-    tpgRoutes = TpgRoutes()
-    tpgRoutes.runTest()
