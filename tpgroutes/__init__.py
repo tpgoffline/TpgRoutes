@@ -10,6 +10,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 import sys
 from array import array
+from .database import *
 
 
 MAX_STATIONS = 100_000
@@ -28,27 +29,6 @@ class EarliestArrival:
         self.connection = connection
 
 
-class ConnectionRow:
-    id: int
-    departure_stop: int
-    arrival_stop: int
-    departure_time: int
-    arrival_time: int
-    line: str
-    trip_id: int
-    destination_stop: int
-
-    def __init__(self, c):
-        self.id = c[0]
-        self.departure_stop = c[1]
-        self.arrival_stop = c[2]
-        self.departure_time = c[3]
-        self.arrival_time = c[4]
-        self.line = c[5]
-        self.trip_id = c[6]
-        self.destination_stop = c[7]
-
-
 class TpgRoutes:
     def __init__(self, logger=None):
         super(TpgRoutes, self).__init__()
@@ -59,18 +39,6 @@ class TpgRoutes:
             # Si un logger existe déjà,
             # par exemple en cas d'utilisation de l'algorithme en tant que module,
             # on évite d'initialiser un nouveau logger, et on utilise celui existant
-
-    def runTest(self):
-        self.load_database("timetables.sqlite")
-        departure_time = 31800
-        for x in range(6):
-            self.logger.info(
-                "(row_id, departure_stop, arrival_stop, departure_time, arrival_time, line, trip_id, direction)"
-            )  # Cette ligne affiche un en-tête pour mieux comprendre la sortie de l'itinéraire
-            route = self.compute_route(8_595_327, 8_587_062, departure_time, 1)
-            for x in route:
-                self.logger.info(x)
-            departure_time = route[0][3] + 1
 
     def configure_logs(self):
         """
@@ -84,30 +52,20 @@ class TpgRoutes:
         formatter = logging.Formatter("%(asctime)s :: %(levelname)s :: %(message)s")
         file_handler = RotatingFileHandler("activity.log", "a", 1_000_000, 1)
 
-        file_handler.setLevel(logging.DEBUG)
+        file_handler.setLevel(logging.INFO)
         file_handler.setFormatter(formatter)
         self.logger.addHandler(file_handler)
 
         stream_handler = logging.StreamHandler()
-        stream_handler.setLevel(logging.DEBUG)
+        stream_handler.setLevel(logging.INFO)
         self.logger.addHandler(stream_handler)
 
-    def load_database(self, path):
-        """
-        Initialiser les données d'itinéraires avec une base SQLite
-
-        :param path: Chemin vers la base de données SQLite
-        """
-        self.logger.info("Loading database...")
-        try:
-            self.database = sqlite3.connect(path)
-            self.cursor = self.database.cursor()
-            self.logger.info("Database loaded")
-        except:
-            self.logger.exception("Loading database failed")
-
     def compute_route(
-        self, departure_station: int, arrival_stop: int, departure_time: int, day: int
+        self,
+        departure_station: int,
+        arrival_stop: int,
+        departure_time: int,
+        dayInt: int,
     ):
         """
         Calcul un itinéraire depuis un arrêt A vers un arrêt B avec le temps de trajet le plus court possible, et au plus proche de l'heure de départ
@@ -123,16 +81,16 @@ class TpgRoutes:
             departure_time < 86400
         ), "departure_time is greater than 86400 seconds, also known as the number of seconds in a day"
 
-        if day == 0:
-            dayString = "sunday"
-        elif day == 6:
-            dayString = "saturday"
-        elif day == 5:
-            dayString = (
-                "friday"
+        if dayInt == 0:
+            day = SundayTimetables
+        elif dayInt == 6:
+            day = SaturdayTimetables
+        elif dayInt == 5:
+            day = (
+                FridayTimetables
             )  # Les horaires de vendredi sont différents de ceux des jours entre lundi et vendredi, en raison de la présence des horaires des lignes Noctambus.
-        elif day > 0 and day < 5:
-            dayString = "monday"
+        elif dayInt > 0 and dayInt < 5:
+            day = MondayTimetables
         else:
             self.logger.exception(
                 "Day is incorrect, it should be an integer between 0 and 6 included"
@@ -153,20 +111,27 @@ class TpgRoutes:
             earliest = MAX_INT
 
             # Nous prenons ici dans la base de données tous les départs étant postérieur à l'heure minimum de départ, ordonné par l'heure de départ
-            self.cursor.execute(
-                f"SELECT * FROM {dayString} WHERE departure_time >= {departure_time} and departure_time < arrival_time ORDER BY departure_time"
-            )
-            for c in self.cursor.fetchall():
-                connection = ConnectionRow(
-                    c
-                )  # Initialiser avec une classe permet de rendre le code plus lisible, et de rendre le débogage plus simple
+            for connection in (
+                session.query(day)
+                .filter(
+                    day.departure_time >= departure_time,
+                    day.departure_time <= departure_time + 10800,
+                    day.departure_time < day.arrival_time,
+                )
+                .order_by(day.departure_time)
+            ):
                 minimum_connection_time = 120  # en secondes
                 if not earliest_arrival[
                     connection.departure_stop - STATIONS_OFFSET
                 ].trip_id:
                     # Si nous sommes à l'arrêt de départ, alors il n'y a pas besoin d'un délai de connexion
                     minimum_connection_time = 0
-                elif c[6] == earliest_arrival[c[1] - STATIONS_OFFSET].trip_id:
+                elif (
+                    connection.trip_id
+                    == earliest_arrival[
+                        connection.departure_stop - STATIONS_OFFSET
+                    ].trip_id
+                ):
                     # Si nous continuons notre trajet avec le même véhicule, alors il n'y a pas besoin d'un délai de connexion
                     minimum_connection_time = 0
 
@@ -182,7 +147,7 @@ class TpgRoutes:
 
                 if (
                     connection.departure_time
-                    > (
+                    >= (
                         earliest_arrival[
                             connection.departure_stop - STATIONS_OFFSET
                         ].time
@@ -232,13 +197,12 @@ class TpgRoutes:
                 last_connection_index = in_connection[arrival_stop - STATIONS_OFFSET]
 
                 while last_connection_index != MAX_INT:
-                    self.cursor.execute(
-                        f"SELECT * FROM {dayString} WHERE id = {last_connection_index}"
+                    connection = (
+                        session.query(day).filter_by(id=last_connection_index).first()
                     )
-                    connection = self.cursor.fetchall()[0]
                     route.append(connection)
                     last_connection_index = in_connection[
-                        connection[1] - STATIONS_OFFSET
+                        connection.departure_stop - STATIONS_OFFSET
                     ]
 
                 # Et nous pouvons retourner le résultat dans le bon ordre
