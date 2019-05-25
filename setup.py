@@ -10,7 +10,7 @@ README = (HERE / "README.md").read_text()
 # This call to setup() does all the work
 setup(
     name="tpgroutes",
-    version="1.0.1",
+    version="1.0.2",
     description="Routes algorithm for Geneva Public Transportations, in Python",
     long_description=README,
     long_description_content_type="text/markdown",
@@ -24,6 +24,6 @@ setup(
         "Programming Language :: Python :: 3.7",
     ],
     packages=["tpgroutes"],
-    install_requires=[],
+    install_requires=["sqlalchemy"],
     entry_points={"console_scripts": ["tpgroutes=tpgroutes.__main__:main"]},
 )
