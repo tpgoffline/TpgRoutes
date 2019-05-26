@@ -24,6 +24,6 @@ setup(
         "Programming Language :: Python :: 3.7",
     ],
     packages=["tpgroutes"],
-    install_requires=[],
+    install_requires=["sqlalchemy"],
     entry_points={"console_scripts": ["tpgroutes=tpgroutes.__main__:main"]},
 )
