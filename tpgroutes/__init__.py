@@ -61,19 +61,15 @@ class TpgRoutes:
         self.logger.addHandler(stream_handler)
 
     def compute_route(
-        self,
-        departure_station: int,
-        arrival_stop: int,
-        departure_time: int,
-        dayInt: int,
+        self, departure_stop: int, arrival_stop: int, departure_time: int, dayInt: int
     ):
         """
         Calcul un itinéraire depuis un arrêt A vers un arrêt B avec le temps de trajet le plus court possible, et au plus proche de l'heure de départ
 
-        :param departure_station: Identifiant de l'arrêt de départ dans la base de données, habituellement l'identifiant CFF
+        :param departure_stop: Identifiant de l'arrêt de départ dans la base de données, habituellement l'identifiant CFF
         :param arrival_stop: Identifiant de l'arrêt d'arrivée dans la base de données, habituellement l'identifiant CFF
         :param departure_time: Heure minimum de départ, en secondes depuis minuit
-        :param day: Jour de la semaine, peut-être un entier en 0 et 6, de dimanche à samedi
+        :param day: Jour de la semaine, peut-être un entier en 0 et 6, de lundi à dimanche
         """
 
         assert departure_time > 0, "departure_time is less than 0 seconds"
@@ -81,15 +77,15 @@ class TpgRoutes:
             departure_time < 86400
         ), "departure_time is greater than 86400 seconds, also known as the number of seconds in a day"
 
-        if dayInt == 0:
+        if dayInt == 6:
             day = SundayTimetables
-        elif dayInt == 6:
-            day = SaturdayTimetables
         elif dayInt == 5:
+            day = SaturdayTimetables
+        elif dayInt == 4:
             day = (
                 FridayTimetables
             )  # Les horaires de vendredi sont différents de ceux des jours entre lundi et vendredi, en raison de la présence des horaires des lignes Noctambus.
-        elif dayInt > 0 and dayInt < 5:
+        elif dayInt >= 0 and dayInt < 4:
             day = MondayTimetables
         else:
             self.logger.exception(
@@ -102,10 +98,10 @@ class TpgRoutes:
             EarliestArrival(MAX_INT, "", 0) for _ in range(MAX_STATIONS)
         ]
 
-        earliest_arrival[departure_station - STATIONS_OFFSET].time = departure_time
+        earliest_arrival[departure_stop - STATIONS_OFFSET].time = departure_time
 
         # Juste au cas où, nous vérifions que les arrêts de départs et les arrêts d'arrivée sont dans l'écart des identifiants autorisés
-        if (departure_station - STATIONS_OFFSET) <= MAX_STATIONS and (
+        if (departure_stop - STATIONS_OFFSET) <= MAX_STATIONS and (
             arrival_stop - STATIONS_OFFSET
         ) <= MAX_STATIONS:
             earliest = MAX_INT
@@ -185,7 +181,6 @@ class TpgRoutes:
                     continue
 
             # Maintenant que l'itinéraire est calculé dans deux tableaux, nous pouvons donc le reconstruire
-
             if in_connection[arrival_stop - STATIONS_OFFSET] == MAX_INT:
                 # Si l'arrêt d'arrivée n'a pas de connexion, alors aucun itinéraire n'a été trouvé
                 # Cela peut arriver parfois, notamment lorsque l'heure de départ est proche de l'heure de fin de service
